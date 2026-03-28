@@ -1,5 +1,6 @@
-// Market prices service – fetches live mandi data from the Indian Government's
-// data.gov.in Open Data API and falls back to static data when the key is absent.
+// Market prices service – fetches live mandi data from pyPricingAPI (eNAM),
+// completely free with no API key required, and falls back to static data
+// when the API is unreachable or returns no records.
 
 import { crops as staticCrops } from "@/lib/crop-data"
 import type { MandiRecord, MarketPrice, CropPriceSummary, MarketPricesData } from "@/lib/types/market"
@@ -8,17 +9,20 @@ import type { MandiRecord, MarketPrice, CropPriceSummary, MarketPricesData } fro
 // Configuration
 // ---------------------------------------------------------------------------
 
-/** data.gov.in commodity price resource ID */
-const DATA_GOV_RESOURCE_ID = "9ef84268-d588-465a-a308-a864a43d0070"
-const DATA_GOV_BASE_URL = "https://api.data.gov.in/resource"
+/**
+ * pyPricingAPI – eNAM (e-National Agricultural Market) commodity prices.
+ * No API key required. Free and unlimited.
+ * GitHub: https://github.com/ag-chitta/pyPricingAPI
+ */
+const PYPRICINGAPI_BASE_URL =
+  "https://k14y5popkj.execute-api.ap-south-1.amazonaws.com/stage/commodities"
 
 /** How long to keep fetched data in the in-memory cache (30 minutes) */
 const CACHE_TTL_MS = 30 * 60 * 1000
 
 /**
  * Factors used to estimate historical prices when only today's live modal
- * price is available from the API.  These are rough approximations – the
- * data.gov.in resource does not expose historical series.
+ * price is available from the API.
  */
 const PREV_DAY_FACTOR = 0.98  // approx. previous-trading-day price relative to current
 const WEEK_AGO_FACTOR = 0.95  // approx. price one week ago relative to current
@@ -102,32 +106,32 @@ function aggregatePrice(records: MandiRecord[]): Pick<MarketPrice, "minPrice" | 
 }
 
 // ---------------------------------------------------------------------------
-// data.gov.in API fetcher
+// pyPricingAPI fetcher (no API key required)
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch mandi prices for a given commodity and state from data.gov.in.
- * Returns an empty array (not an error) when the API key is not configured.
+ * Fetch current mandi prices for a given commodity and place from pyPricingAPI.
+ * Returns an empty array when the API is unreachable or returns no matching data.
+ * No API key is required.
  */
-async function fetchMandiPrices(commodity: string, state: string, apiKey: string): Promise<MandiRecord[]> {
-  const url = new URL(`${DATA_GOV_BASE_URL}/${DATA_GOV_RESOURCE_ID}`)
-  url.searchParams.set("api-key", apiKey)
-  url.searchParams.set("format", "json")
-  url.searchParams.set("limit", "50")
-  url.searchParams.set("filters[State]", state)
-  url.searchParams.set("filters[Commodity]", commodity)
+async function fetchMandiPrices(commodity: string, place: string): Promise<MandiRecord[]> {
+  const url = new URL(PYPRICINGAPI_BASE_URL)
+  url.searchParams.set("place", place)
+  url.searchParams.set("commodity", commodity)
+  url.searchParams.set("type", "current")
 
   const res = await fetch(url.toString(), {
-    // Ensure we get a fresh result from the server (CDN caching is fine)
     next: { revalidate: 1800 },
   })
 
   if (!res.ok) {
-    throw new Error(`data.gov.in API error ${res.status} for ${commodity} in ${state}`)
+    throw new Error(`pyPricingAPI error ${res.status} for ${commodity} in ${place}`)
   }
 
-  const json = await res.json() as { records?: MandiRecord[] }
-  return json.records ?? []
+  // pyPricingAPI may return either a bare array of records or a wrapper
+  // object with a `records` property, depending on query parameters.
+  const json = await res.json() as MandiRecord[] | { records?: MandiRecord[] }
+  return Array.isArray(json) ? json : (json.records ?? [])
 }
 
 // ---------------------------------------------------------------------------
@@ -177,63 +181,58 @@ function buildFallbackSummary(cropId: string, state: string): CropPriceSummary |
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch market prices for all tracked crops in the given state.
+ * Fetch market prices for all tracked crops for the given state/place.
  *
- * - If `NEXT_PUBLIC_DATA_GOV_API_KEY` is set, live mandi data is fetched from
- *   data.gov.in; individual crop prices fall back to static data when the API
- *   returns no records.
- * - If the key is absent, all prices come from the bundled static dataset.
+ * Uses pyPricingAPI (eNAM data) – no API key required.
+ * Falls back to the bundled static dataset when the API is unreachable or
+ * returns no records for a particular crop.
  */
 export async function fetchMarketPrices(state = "Uttar Pradesh"): Promise<MarketPricesData> {
   const cacheKey = `market:${state.toLowerCase()}`
   const cached = getCached<MarketPricesData>(cacheKey)
   if (cached) return cached
 
-  const apiKey = process.env.NEXT_PUBLIC_DATA_GOV_API_KEY ?? ""
+  // pyPricingAPI uses a 'place' parameter – pass the state name directly.
+  const place = state
   const summaries: CropPriceSummary[] = []
   let anyLive = false
 
   for (const [cropId, meta] of Object.entries(TRACKED_CROPS)) {
-    if (apiKey) {
-      try {
-        const records = await fetchMandiPrices(meta.commodity, state, apiKey)
-        const agg = aggregatePrice(records)
+    try {
+      const records = await fetchMandiPrices(meta.commodity, place)
+      const agg = aggregatePrice(records)
 
-        if (agg) {
-          // Use the static reference price as a historical baseline so that the
-          // percentage change reflects meaningful movement against a known point
-          // rather than a constant proportion of today's live price.
-          const staticRef = staticCrops.find((c) => c.id === cropId)
-          const prevDayPrice = staticRef
-            ? Math.round(staticRef.pricePerQuintal * PREV_DAY_FACTOR)
-            : Math.round(agg.modalPrice * PREV_DAY_FACTOR)
-          const weekAgoPrice = staticRef
-            ? staticRef.pricePerQuintal
-            : Math.round(agg.modalPrice * WEEK_AGO_FACTOR)
-          const priceChange = pct(agg.modalPrice, prevDayPrice)
-          summaries.push({
-            cropId,
-            cropName: meta.commodity,
-            cropNameHi: meta.nameHi,
-            currentPrice: agg.modalPrice,
-            minPrice: agg.minPrice,
-            maxPrice: agg.maxPrice,
-            previousDayPrice: prevDayPrice,
-            weekAgoPrice,
-            priceChange,
-            weeklyChange: pct(agg.modalPrice, weekAgoPrice),
-            trend: deriveTrend(priceChange),
-            lastUpdated: agg.arrivalDate,
-            market: agg.market,
-            state: agg.state,
-            isLive: true,
-          })
-          anyLive = true
-          continue
-        }
-      } catch {
-        // Fall through to static data for this crop
+      if (agg) {
+        const staticRef = staticCrops.find((c) => c.id === cropId)
+        const prevDayPrice = staticRef
+          ? Math.round(staticRef.pricePerQuintal * PREV_DAY_FACTOR)
+          : Math.round(agg.modalPrice * PREV_DAY_FACTOR)
+        const weekAgoPrice = staticRef
+          ? staticRef.pricePerQuintal
+          : Math.round(agg.modalPrice * WEEK_AGO_FACTOR)
+        const priceChange = pct(agg.modalPrice, prevDayPrice)
+        summaries.push({
+          cropId,
+          cropName: meta.commodity,
+          cropNameHi: meta.nameHi,
+          currentPrice: agg.modalPrice,
+          minPrice: agg.minPrice,
+          maxPrice: agg.maxPrice,
+          previousDayPrice: prevDayPrice,
+          weekAgoPrice,
+          priceChange,
+          weeklyChange: pct(agg.modalPrice, weekAgoPrice),
+          trend: deriveTrend(priceChange),
+          lastUpdated: agg.arrivalDate,
+          market: agg.market,
+          state: agg.state,
+          isLive: true,
+        })
+        anyLive = true
+        continue
       }
+    } catch {
+      // Fall through to static data for this crop
     }
 
     const fallback = buildFallbackSummary(cropId, state)
