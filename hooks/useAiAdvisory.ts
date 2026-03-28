@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { fetchFarmingAdvisory } from "@/lib/services/groqService"
+import { fetchFarmingAdvisory } from "@/lib/services/ollamaService"
 import type { AdvisoryContext, AdvisoryData, AdvisoryCategory } from "@/lib/types/advisory"
 
 interface UseAiAdvisoryOptions {

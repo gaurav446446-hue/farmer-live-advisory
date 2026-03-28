@@ -163,7 +163,7 @@ export function AdvisoryCard({ context = {}, categories, className }: AdvisoryCa
         {/* Empty state after loading */}
         {!isLoading && !error && advisory?.items.length === 0 && (
           <p className="py-4 text-center text-sm text-muted-foreground">
-            No advisory available. Please check your API key and try again.
+            No advisory available. Make sure Ollama is running locally and try again.
           </p>
         )}
       </CardContent>
