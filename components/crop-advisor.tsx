@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { useLanguage } from "@/lib/language-context"
+import { AdvisoryCard } from "@/components/AdvisoryCard"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -285,6 +286,21 @@ function CropCard({ crop, rank }: { crop: CropInfo; rank: number }) {
   )
 }
 
+/**
+ * Derive the current agricultural season for the Indian subcontinent.
+ *   Feb-Mar  → spring (mild pre-summer transition)
+ *   Apr-May  → summer (hot dry season)
+ *   Jun-Sep  → monsoon (rainy season)
+ *   Oct-Jan  → winter (rabi sowing/harvesting season)
+ */
+function getCurrentSeason(): "summer" | "monsoon" | "winter" | "spring" {
+  const month = new Date().getMonth() + 1 // 1-12
+  if (month >= 6 && month <= 9) return "monsoon"
+  if (month >= 4 && month <= 5) return "summer"
+  if (month === 2 || month === 3) return "spring"
+  return "winter"
+}
+
 export function CropAdvisor() {
   const { t } = useLanguage()
   const [selectedSoil, setSelectedSoil] = useState<string>("")
@@ -301,6 +317,19 @@ export function CropAdvisor() {
   }
 
   const selectedSoilInfo = soilTypes.find((s) => s.id === selectedSoil)
+
+  const topCrop = recommendations[0]
+  const advisoryContext = {
+    ...(selectedState ? { location: selectedState } : {}),
+    season: getCurrentSeason(),
+    ...(topCrop
+      ? {
+          cropType: topCrop.name,
+          marketPrice: topCrop.pricePerQuintal,
+          priceChange: topCrop.priceChange,
+        }
+      : {}),
+  }
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 lg:px-8">
@@ -420,6 +449,9 @@ export function CropAdvisor() {
               </CardContent>
             </Card>
           )}
+
+          {/* AI Advisory Card */}
+          <AdvisoryCard context={advisoryContext} />
         </div>
 
         {/* Results */}
