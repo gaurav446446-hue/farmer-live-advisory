@@ -1,46 +1,46 @@
-// Market prices service – fetches live mandi data from pyPricingAPI (eNAM),
-// completely free with no API key required, and falls back to static data
-// when the API is unreachable or returns no records.
+// Market prices service – fetches global commodity data from the Alpha Vantage
+// API when an API key is provided, and falls back to static crop data otherwise.
+//
+// Sign up for a free key at https://www.alphavantage.co/
+// Add to .env.local:  NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY=your_key_here
 
 import { crops as staticCrops } from "@/lib/crop-data"
-import type { MandiRecord, MarketPrice, CropPriceSummary, MarketPricesData } from "@/lib/types/market"
+import type {
+  CropPriceSummary,
+  MarketPricesData,
+  AlphaVantageCommodityResponse,
+  AlphaVantageDataPoint,
+} from "@/lib/types/market"
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 /**
- * pyPricingAPI – eNAM (e-National Agricultural Market) commodity prices.
- * No API key required. Free and unlimited.
- * GitHub: https://github.com/ag-chitta/pyPricingAPI
+ * Alpha Vantage commodity prices API.
+ * Sign up at https://www.alphavantage.co/ – free tier: 25 requests/day.
  */
-const PYPRICINGAPI_BASE_URL =
-  "https://k14y5popkj.execute-api.ap-south-1.amazonaws.com/stage/commodities"
+const ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
 
 /** How long to keep fetched data in the in-memory cache (30 minutes) */
 const CACHE_TTL_MS = 30 * 60 * 1000
 
 /**
- * Factors used to estimate historical prices when only today's live modal
- * price is available from the API.
+ * Commodities tracked via Alpha Vantage, keyed by an internal id.
+ * `avFunction` is the Alpha Vantage `function` query parameter value.
  */
-const PREV_DAY_FACTOR = 0.98  // approx. previous-trading-day price relative to current
-const WEEK_AGO_FACTOR = 0.95  // approx. price one week ago relative to current
-
-/** Crops we actively track, keyed by the internal cropId from crop-data.ts */
-const TRACKED_CROPS: Record<string, { commodity: string; nameHi: string }> = {
-  rice: { commodity: "Rice", nameHi: "चावल (धान)" },
-  wheat: { commodity: "Wheat", nameHi: "गेहूं" },
-  cotton: { commodity: "Cotton", nameHi: "कपास" },
-  soybean: { commodity: "Soybean", nameHi: "सोयाबीन" },
-  sugarcane: { commodity: "Sugarcane", nameHi: "गन्ना" },
-  mustard: { commodity: "Mustard", nameHi: "सरसों" },
-  chickpea: { commodity: "Gram", nameHi: "चना" },
-  maize: { commodity: "Maize", nameHi: "मक्का" },
-  groundnut: { commodity: "Groundnut", nameHi: "मूंगफली" },
-  turmeric: { commodity: "Turmeric", nameHi: "हल्दी" },
-  tomato: { commodity: "Tomato", nameHi: "टमाटर" },
-  millet: { commodity: "Bajra(Pearl Millet/Cumbu)", nameHi: "बाजरा / ज्वार" },
+const TRACKED_COMMODITIES: Record<
+  string,
+  { avFunction: string; name: string; nameHi: string; unit: string }
+> = {
+  wheat: { avFunction: "WHEAT", name: "Wheat", nameHi: "गेहूं", unit: "cents/bushel" },
+  corn: { avFunction: "CORN", name: "Corn", nameHi: "मक्का", unit: "cents/bushel" },
+  cotton: { avFunction: "COTTON", name: "Cotton", nameHi: "कपास", unit: "cents/pound" },
+  sugar: { avFunction: "SUGAR", name: "Sugar", nameHi: "चीनी", unit: "cents/pound" },
+  coffee: { avFunction: "COFFEE", name: "Coffee", nameHi: "कॉफ़ी", unit: "cents/pound" },
+  natural_gas: { avFunction: "NATURAL_GAS", name: "Natural Gas", nameHi: "प्राकृतिक गैस", unit: "USD/MMBtu" },
+  crude_oil: { avFunction: "CRUDE_OIL_WTI", name: "Crude Oil (WTI)", nameHi: "कच्चा तेल (WTI)", unit: "USD/barrel" },
+  copper: { avFunction: "COPPER", name: "Copper", nameHi: "तांबा", unit: "USD/ton" },
 }
 
 // ---------------------------------------------------------------------------
@@ -81,57 +81,53 @@ function deriveTrend(change: number): "up" | "stable" | "down" {
 }
 
 /**
- * Given a list of raw mandi records for a single commodity, return the
- * aggregate modal price across all markets (simple average).
+ * Parse a numeric price value from an Alpha Vantage data point.
+ * Returns null when the value is "." (no data) or not a valid number.
  */
-function aggregatePrice(records: MandiRecord[]): Pick<MarketPrice, "minPrice" | "maxPrice" | "modalPrice" | "market" | "state" | "arrivalDate"> | null {
-  if (!records.length) return null
-
-  const modals = records.map((r) => parseFloat(r.modal_price)).filter((v) => !isNaN(v))
-  const mins = records.map((r) => parseFloat(r.min_price)).filter((v) => !isNaN(v))
-  const maxs = records.map((r) => parseFloat(r.max_price)).filter((v) => !isNaN(v))
-
-  if (!modals.length) return null
-
-  const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length
-
-  return {
-    modalPrice: Math.round(avg(modals)),
-    minPrice: Math.round(mins.length ? Math.min(...mins) : modals[0]),
-    maxPrice: Math.round(maxs.length ? Math.max(...maxs) : modals[0]),
-    market: records[0].market,
-    state: records[0].state,
-    arrivalDate: records[0].arrival_date,
-  }
+function parseAVValue(point: AlphaVantageDataPoint): number | null {
+  const v = parseFloat(point.value)
+  return isNaN(v) ? null : v
 }
 
 // ---------------------------------------------------------------------------
-// pyPricingAPI fetcher (no API key required)
+// Alpha Vantage fetcher
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch current mandi prices for a given commodity and place from pyPricingAPI.
- * Returns an empty array when the API is unreachable or returns no matching data.
- * No API key is required.
+ * Fetch monthly commodity price series from Alpha Vantage.
+ * Returns null when the API key is missing, the rate limit is hit, or the
+ * response is invalid.
  */
-async function fetchMandiPrices(commodity: string, place: string): Promise<MandiRecord[]> {
-  const url = new URL(PYPRICINGAPI_BASE_URL)
-  url.searchParams.set("place", place)
-  url.searchParams.set("commodity", commodity)
-  url.searchParams.set("type", "current")
+async function fetchAlphaVantageCommodity(
+  avFunction: string,
+  apiKey: string
+): Promise<AlphaVantageCommodityResponse | null> {
+  const url = new URL(ALPHA_VANTAGE_BASE_URL)
+  url.searchParams.set("function", avFunction)
+  url.searchParams.set("interval", "monthly")
+  url.searchParams.set("apikey", apiKey)
 
   const res = await fetch(url.toString(), {
     next: { revalidate: 1800 },
   })
 
   if (!res.ok) {
-    throw new Error(`pyPricingAPI error ${res.status} for ${commodity} in ${place}`)
+    throw new Error(`Alpha Vantage HTTP ${res.status} for ${avFunction}`)
   }
 
-  // pyPricingAPI may return either a bare array of records or a wrapper
-  // object with a `records` property, depending on query parameters.
-  const json = await res.json() as MandiRecord[] | { records?: MandiRecord[] }
-  return Array.isArray(json) ? json : (json.records ?? [])
+  const json = (await res.json()) as AlphaVantageCommodityResponse
+
+  // Detect API-level errors / rate limiting
+  if (json["Error Message"] || json.Note || json.Information) {
+    const msg = json["Error Message"] ?? json.Note ?? json.Information ?? "Unknown error"
+    throw new Error(`Alpha Vantage API error for ${avFunction}: ${msg}`)
+  }
+
+  if (!Array.isArray(json.data) || json.data.length === 0) {
+    return null
+  }
+
+  return json
 }
 
 // ---------------------------------------------------------------------------
@@ -139,40 +135,39 @@ async function fetchMandiPrices(commodity: string, place: string): Promise<Mandi
 // ---------------------------------------------------------------------------
 
 /**
- * Produce a CropPriceSummary from the static crop-data.ts entry.
- * Simulates yesterday/week-ago prices using the existing priceChange field.
+ * Build a CropPriceSummary from the static crop-data.ts entry for a given
+ * commodity id (using the overlapping ids: wheat, corn, cotton, etc.).
  */
-function buildFallbackSummary(cropId: string, state: string): CropPriceSummary | null {
-  const staticCrop = staticCrops.find((c) => c.id === cropId)
-  const meta = TRACKED_CROPS[cropId]
-  if (!staticCrop || !meta) return null
+function buildFallbackSummary(commodityId: string): CropPriceSummary | null {
+  const meta = TRACKED_COMMODITIES[commodityId]
+  if (!meta) return null
 
-  const current = staticCrop.pricePerQuintal
-  // Back-calculate the previous-day and week-ago prices from the stored
-  // percentage change so the displayed trend is consistent with the static data.
-  const previousDayPrice = staticCrop.priceChange
+  // Try to find a matching static crop entry by id
+  const staticCrop = staticCrops.find((c) => c.id === commodityId)
+  const current = staticCrop?.pricePerQuintal ?? 100
+
+  const prevMonthPrice = staticCrop?.priceChange
     ? Math.round(current / (1 + staticCrop.priceChange / 100))
-    : Math.round(current * PREV_DAY_FACTOR)
-  const weekAgoPrice = staticCrop.priceChange
-    ? Math.round(current / (1 + (staticCrop.priceChange * 5) / 100))
-    : Math.round(current * WEEK_AGO_FACTOR)
+    : Math.round(current * 0.98)
+  const weekAgoPrice = Math.round(current * 0.95)
 
   return {
-    cropId,
-    cropName: staticCrop.name,
-    cropNameHi: staticCrop.nameHi,
+    cropId: commodityId,
+    cropName: meta.name,
+    cropNameHi: meta.nameHi,
     currentPrice: current,
     minPrice: Math.round(current * 0.95),
     maxPrice: Math.round(current * 1.05),
-    previousDayPrice,
+    previousDayPrice: prevMonthPrice,
     weekAgoPrice,
-    priceChange: staticCrop.priceChange,
+    priceChange: staticCrop?.priceChange ?? pct(current, prevMonthPrice),
     weeklyChange: pct(current, weekAgoPrice),
-    trend: staticCrop.priceTrend,
+    trend: staticCrop?.priceTrend ?? "stable",
     lastUpdated: new Date().toISOString(),
-    market: "National Average",
-    state,
+    market: "Reference Data",
+    state: "Global",
     isLive: false,
+    unit: meta.unit,
   }
 }
 
@@ -181,61 +176,74 @@ function buildFallbackSummary(cropId: string, state: string): CropPriceSummary |
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch market prices for all tracked crops for the given state/place.
+ * Fetch market prices for all tracked commodities.
  *
- * Uses pyPricingAPI (eNAM data) – no API key required.
- * Falls back to the bundled static dataset when the API is unreachable or
- * returns no records for a particular crop.
+ * Uses the Alpha Vantage API when `NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY` is set
+ * in the environment. Falls back to static reference data when the key is
+ * absent or the API call fails.
+ *
+ * Sign up for a free key at https://www.alphavantage.co/
  */
-export async function fetchMarketPrices(state = "Uttar Pradesh"): Promise<MarketPricesData> {
-  const cacheKey = `market:${state.toLowerCase()}`
+export async function fetchMarketPrices(): Promise<MarketPricesData> {
+  const cacheKey = "market:global"
   const cached = getCached<MarketPricesData>(cacheKey)
   if (cached) return cached
 
-  // pyPricingAPI uses a 'place' parameter – pass the state name directly.
-  const place = state
+  const apiKey = process.env.NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY ?? ""
   const summaries: CropPriceSummary[] = []
   let anyLive = false
 
-  for (const [cropId, meta] of Object.entries(TRACKED_CROPS)) {
-    try {
-      const records = await fetchMandiPrices(meta.commodity, place)
-      const agg = aggregatePrice(records)
+  for (const [commodityId, meta] of Object.entries(TRACKED_COMMODITIES)) {
+    if (apiKey) {
+      try {
+        const avData = await fetchAlphaVantageCommodity(meta.avFunction, apiKey)
 
-      if (agg) {
-        const staticRef = staticCrops.find((c) => c.id === cropId)
-        const prevDayPrice = staticRef
-          ? Math.round(staticRef.pricePerQuintal * PREV_DAY_FACTOR)
-          : Math.round(agg.modalPrice * PREV_DAY_FACTOR)
-        const weekAgoPrice = staticRef
-          ? staticRef.pricePerQuintal
-          : Math.round(agg.modalPrice * WEEK_AGO_FACTOR)
-        const priceChange = pct(agg.modalPrice, prevDayPrice)
-        summaries.push({
-          cropId,
-          cropName: meta.commodity,
-          cropNameHi: meta.nameHi,
-          currentPrice: agg.modalPrice,
-          minPrice: agg.minPrice,
-          maxPrice: agg.maxPrice,
-          previousDayPrice: prevDayPrice,
-          weekAgoPrice,
-          priceChange,
-          weeklyChange: pct(agg.modalPrice, weekAgoPrice),
-          trend: deriveTrend(priceChange),
-          lastUpdated: agg.arrivalDate,
-          market: agg.market,
-          state: agg.state,
-          isLive: true,
-        })
-        anyLive = true
-        continue
+        if (avData && avData.data.length > 0) {
+          // Data is sorted newest-first
+          const points = avData.data
+          const currentPrice = parseAVValue(points[0])
+          const prevMonthPrice = points.length > 1 ? parseAVValue(points[1]) : null
+          const twoMonthsAgoPrice = points.length > 2 ? parseAVValue(points[2]) : null
+
+          if (currentPrice !== null) {
+            const priceChange = prevMonthPrice !== null ? pct(currentPrice, prevMonthPrice) : 0
+            const weeklyChange = twoMonthsAgoPrice !== null ? pct(currentPrice, twoMonthsAgoPrice) : 0
+            const roundedCurrent = Math.round(currentPrice * 100) / 100
+            const roundedMin = prevMonthPrice !== null
+              ? Math.round(Math.min(currentPrice, prevMonthPrice) * 100) / 100
+              : roundedCurrent
+            const roundedMax = prevMonthPrice !== null
+              ? Math.round(Math.max(currentPrice, prevMonthPrice) * 100) / 100
+              : roundedCurrent
+
+            summaries.push({
+              cropId: commodityId,
+              cropName: meta.name,
+              cropNameHi: meta.nameHi,
+              currentPrice: roundedCurrent,
+              minPrice: roundedMin,
+              maxPrice: roundedMax,
+              previousDayPrice: prevMonthPrice,
+              weekAgoPrice: twoMonthsAgoPrice,
+              priceChange,
+              weeklyChange,
+              trend: deriveTrend(priceChange),
+              lastUpdated: points[0].date,
+              market: "Global Market",
+              state: "Global",
+              isLive: true,
+              unit: avData.unit || meta.unit,
+            })
+            anyLive = true
+            continue
+          }
+        }
+      } catch {
+        // Fall through to static fallback for this commodity
       }
-    } catch {
-      // Fall through to static data for this crop
     }
 
-    const fallback = buildFallbackSummary(cropId, state)
+    const fallback = buildFallbackSummary(commodityId)
     if (fallback) summaries.push(fallback)
   }
 
@@ -248,8 +256,9 @@ export async function fetchMarketPrices(state = "Uttar Pradesh"): Promise<Market
   const result: MarketPricesData = {
     crops: summaries,
     lastFetchedAt: Date.now(),
-    state,
+    state: "Global",
     isLiveData: anyLive,
+    apiSource: anyLive ? "alpha_vantage" : "static",
   }
 
   setCached(cacheKey, result)

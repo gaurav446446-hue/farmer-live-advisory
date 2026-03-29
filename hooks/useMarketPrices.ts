@@ -8,8 +8,6 @@ import type { MarketPricesData } from "@/lib/types/market"
 const DEFAULT_REFRESH_INTERVAL_MS = 30 * 60 * 1000
 
 interface UseMarketPricesOptions {
-  /** Indian state name used to filter mandi prices. Defaults to "Uttar Pradesh". */
-  state?: string
   /** Auto-refresh interval in milliseconds. Set to 0 to disable. */
   refreshIntervalMs?: number
 }
@@ -23,7 +21,6 @@ interface UseMarketPricesResult {
 }
 
 export function useMarketPrices({
-  state = "Uttar Pradesh",
   refreshIntervalMs = DEFAULT_REFRESH_INTERVAL_MS,
 }: UseMarketPricesOptions = {}): UseMarketPricesResult {
   const [data, setData] = useState<MarketPricesData | null>(null)
@@ -37,7 +34,7 @@ export function useMarketPrices({
       if (bustCache) clearMarketCache()
 
       try {
-        const result = await fetchMarketPrices(state)
+        const result = await fetchMarketPrices()
         setData(result)
       } catch (err) {
         setError(
@@ -47,10 +44,10 @@ export function useMarketPrices({
         setIsLoading(false)
       }
     },
-    [state]
+    []
   )
 
-  // Fetch on mount and whenever `state` changes
+  // Fetch on mount
   useEffect(() => {
     fetchData()
   }, [fetchData])
