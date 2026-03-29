@@ -5,9 +5,8 @@ import {
   fetchWeatherByCoords,
   fetchWeatherByCity,
   fetchForecastByCoords,
-  type WeatherData,
-  type WeatherForecast,
 } from "@/lib/services/weatherService"
+import type { WeatherData, WeatherForecast } from "@/lib/types/weather"
 
 export type WeatherUnits = "metric" | "imperial"
 

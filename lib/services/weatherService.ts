@@ -1,44 +1,7 @@
 // OpenWeatherMap API service for live weather data
 
-export interface WeatherData {
-  location: string
-  country: string
-  temperature: number
-  feelsLike: number
-  tempMin: number
-  tempMax: number
-  humidity: number
-  windSpeed: number
-  windDirection: number
-  weatherMain: string
-  weatherDescription: string
-  weatherIcon: string
-  cloudiness: number
-  visibility: number
-  pressure: number
-  sunrise: number
-  sunset: number
-  precipitationChance: number
-  timestamp: number
-}
-
-export interface ForecastDay {
-  date: number
-  tempMin: number
-  tempMax: number
-  humidity: number
-  weatherMain: string
-  weatherDescription: string
-  weatherIcon: string
-  precipitationChance: number
-  windSpeed: number
-}
-
-export interface WeatherForecast {
-  location: string
-  country: string
-  days: ForecastDay[]
-}
+export type { WeatherData, ForecastDay, WeatherForecast } from "@/lib/types/weather"
+import type { WeatherData, ForecastDay, WeatherForecast } from "@/lib/types/weather"
 
 const BASE_URL = "https://api.openweathermap.org/data/2.5"
 
