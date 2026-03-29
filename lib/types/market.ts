@@ -1,52 +1,50 @@
 // TypeScript interfaces for market price data
 
-/** A single mandi (wholesale market) price record from data.gov.in API */
-export interface MandiRecord {
-  state: string
-  district: string
-  market: string
-  commodity: string
-  variety: string
-  grade: string
-  arrival_date: string
-  min_price: string
-  max_price: string
-  modal_price: string
+// ---------------------------------------------------------------------------
+// Alpha Vantage API types
+// ---------------------------------------------------------------------------
+
+/** A single data point returned by the Alpha Vantage commodity endpoints */
+export interface AlphaVantageDataPoint {
+  date: string
+  value: string
 }
 
-/** Normalised price entry for a single crop in a single market */
-export interface MarketPrice {
-  commodity: string
-  variety: string
-  state: string
-  district: string
-  market: string
-  /** INR per quintal */
-  minPrice: number
-  /** INR per quintal */
-  maxPrice: number
-  /** INR per quintal – most representative price */
-  modalPrice: number
-  arrivalDate: string
+/** Response envelope from the Alpha Vantage commodity endpoints */
+export interface AlphaVantageCommodityResponse {
+  name: string
+  interval: string
+  unit: string
+  data: AlphaVantageDataPoint[]
+  /** Present when the API returns an error message */
+  "Error Message"?: string
+  /** Present when the free-tier rate limit is exceeded */
+  Information?: string
+  /** Present when the API call frequency limit is exceeded */
+  Note?: string
 }
 
-/** Price summary for a tracked crop, enriched with trend data */
+// ---------------------------------------------------------------------------
+// Shared / normalised types
+// ---------------------------------------------------------------------------
+
+/** Price summary for a tracked commodity, enriched with trend data */
 export interface CropPriceSummary {
-  /** Matches the id field in CropInfo from crop-data.ts */
+  /** Internal commodity identifier */
   cropId: string
   cropName: string
   cropNameHi: string
-  /** Modal price in INR per quintal */
+  /** Current price (USD for Alpha Vantage, INR per quintal for static data) */
   currentPrice: number
   minPrice: number
   maxPrice: number
-  /** Simulated / cached price from the previous trading day */
+  /** Price from the previous period (previous month for Alpha Vantage) */
   previousDayPrice: number | null
-  /** Simulated / cached price from one week ago */
+  /** Price from approximately one week / one period ago */
   weekAgoPrice: number | null
-  /** Percentage change vs previous day (positive = risen) */
+  /** Percentage change vs previous period (positive = risen) */
   priceChange: number
-  /** Percentage change vs one week ago */
+  /** Percentage change vs the period before that */
   weeklyChange: number
   trend: "up" | "stable" | "down"
   lastUpdated: string
@@ -54,6 +52,8 @@ export interface CropPriceSummary {
   state: string
   /** Whether this price came from the live API (true) or fallback data (false) */
   isLive: boolean
+  /** Price unit, e.g. "cents/bushel", "USD/barrel" */
+  unit?: string
 }
 
 /** Full response from the market prices hook */
@@ -62,6 +62,8 @@ export interface MarketPricesData {
   /** Unix timestamp of last successful fetch */
   lastFetchedAt: number
   state: string
-  /** Whether all crop data is from the live API */
+  /** Whether any commodity data is from the live API */
   isLiveData: boolean
+  /** Which data source was used */
+  apiSource?: "alpha_vantage" | "static"
 }

@@ -1,25 +1,16 @@
 "use client"
 
-import { useState } from "react"
 import { useMarketPrices } from "@/hooks/useMarketPrices"
 import { useLanguage } from "@/lib/language-context"
-import { states } from "@/lib/crop-data"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
   TrendingUp,
   TrendingDown,
   Minus,
-  IndianRupee,
+  BarChart2,
   RefreshCw,
   AlertTriangle,
   Wifi,
@@ -37,7 +28,7 @@ function TrendIcon({ trend }: { trend: "up" | "stable" | "down" }) {
 }
 
 function formatPrice(price: number): string {
-  return price.toLocaleString("en-IN")
+  return Number.isInteger(price) ? price.toString() : price.toFixed(2)
 }
 
 function formatChange(change: number): string {
@@ -87,9 +78,8 @@ interface MarketPricesCardProps {
 
 export function MarketPricesCard({ className }: MarketPricesCardProps) {
   const { language } = useLanguage()
-  const [selectedState, setSelectedState] = useState("Uttar Pradesh")
 
-  const { data, isLoading, error, refresh } = useMarketPrices({ state: selectedState })
+  const { data, isLoading, error, refresh } = useMarketPrices()
 
   const lastUpdated = data?.lastFetchedAt
     ? new Date(data.lastFetchedAt).toLocaleTimeString("en-IN", {
@@ -104,14 +94,14 @@ export function MarketPricesCard({ className }: MarketPricesCardProps) {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle className="flex items-center gap-2 text-card-foreground">
-              <IndianRupee className="h-5 w-5" />
-              Live Mandi Prices
+              <BarChart2 className="h-5 w-5" />
+              Global Commodity Prices
             </CardTitle>
             <CardDescription className="mt-1">
               {data?.isLiveData ? (
                 <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
                   <Wifi className="h-3.5 w-3.5" />
-                  Live data
+                  Live data · Alpha Vantage
                   {lastUpdated && <span className="text-muted-foreground"> · Updated {lastUpdated}</span>}
                 </span>
               ) : (
@@ -125,20 +115,6 @@ export function MarketPricesCard({ className }: MarketPricesCardProps) {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* State selector */}
-            <Select value={selectedState} onValueChange={setSelectedState}>
-              <SelectTrigger className="w-44">
-                <SelectValue placeholder="Select state" />
-              </SelectTrigger>
-              <SelectContent>
-                {states.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
             {/* Refresh button */}
             <Button
               variant="outline"
@@ -174,69 +150,63 @@ export function MarketPricesCard({ className }: MarketPricesCardProps) {
         {/* Price list */}
         {data && (
           <div className="flex flex-col gap-3">
-            {data.crops.map((crop) => (
+            {data.crops.map((commodity) => (
               <div
-                key={crop.cropId}
+                key={commodity.cropId}
                 className="flex flex-col gap-3 rounded-lg border p-4 transition-colors hover:bg-muted/50 md:flex-row md:items-center md:justify-between"
               >
-                {/* Crop identity */}
+                {/* Commodity identity */}
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent">
-                    <IndianRupee className="h-4 w-4 text-accent-foreground" />
+                    <BarChart2 className="h-4 w-4 text-accent-foreground" />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-foreground">
-                        {language === "hi" ? crop.cropNameHi : crop.cropName}
+                        {language === "hi" ? commodity.cropNameHi : commodity.cropName}
                       </span>
-                      {crop.isLive && (
+                      {commodity.isLive && (
                         <Badge variant="outline" className="border-green-500/40 text-xs text-green-600 dark:text-green-400">
                           Live
                         </Badge>
                       )}
                     </div>
-                    <div className="text-xs text-muted-foreground">{crop.market}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {commodity.unit ? `${commodity.market} · ${commodity.unit}` : commodity.market}
+                    </div>
                   </div>
                 </div>
 
                 {/* Price data */}
                 <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-                  {/* Min – Max range */}
+                  {/* Current price */}
                   <div className="text-right">
-                    <div className="text-xs text-muted-foreground">Range</div>
-                    <div className="text-sm text-foreground">
-                      ₹{formatPrice(crop.minPrice)} – ₹{formatPrice(crop.maxPrice)}
-                    </div>
-                  </div>
-
-                  {/* Modal / current price */}
-                  <div className="text-right">
-                    <div className="text-xs text-muted-foreground">Modal price</div>
+                    <div className="text-xs text-muted-foreground">Price</div>
                     <div className="text-base font-bold text-foreground">
-                      ₹{formatPrice(crop.currentPrice)}
+                      {formatPrice(commodity.currentPrice)}
                     </div>
                   </div>
 
-                  {/* Day change */}
+                  {/* Month-over-month change */}
                   <div className="flex items-center gap-1.5">
-                    <TrendIcon trend={crop.trend} />
+                    <TrendIcon trend={commodity.trend} />
                     <div>
-                      <span className={`text-sm font-medium ${changeColor(crop.priceChange)}`}>
-                        {formatChange(crop.priceChange)}
+                      <span className={`text-sm font-medium ${changeColor(commodity.priceChange)}`}>
+                        {formatChange(commodity.priceChange)}
                       </span>
                       <div className="text-xs text-muted-foreground">
-                        {crop.isLive ? "vs yesterday" : "est. vs yesterday"}
+                        {commodity.isLive ? "vs last month" : "est. change"}
                       </div>
                     </div>
                   </div>
 
-                  {/* Weekly change */}
+                  {/* Two-month change */}
                   <div className="text-right">
-                    <span className={`text-sm font-medium ${changeColor(crop.weeklyChange)}`}>
-                      {formatChange(crop.weeklyChange)}
+                    <span className={`text-sm font-medium ${changeColor(commodity.weeklyChange)}`}>
+                      {formatChange(commodity.weeklyChange)}
                     </span>
                     <div className="text-xs text-muted-foreground">
-                      {crop.isLive ? "vs last week" : "est. vs last week"}
+                      {commodity.isLive ? "vs 2 months ago" : "est. trend"}
                     </div>
                   </div>
                 </div>
@@ -245,11 +215,22 @@ export function MarketPricesCard({ className }: MarketPricesCardProps) {
           </div>
         )}
 
-        {/* API key hint */}
+        {/* API key hint when showing reference data */}
         {data && !data.isLiveData && (
           <p className="mt-4 text-center text-xs text-muted-foreground">
-            Set <code className="rounded bg-muted px-1 py-0.5">NEXT_PUBLIC_DATA_GOV_API_KEY</code> in{" "}
-            <code className="rounded bg-muted px-1 py-0.5">.env.local</code> to enable real-time mandi prices.
+            Set{" "}
+            <code className="rounded bg-muted px-1 py-0.5">NEXT_PUBLIC_ALPHA_VANTAGE_API_KEY</code>{" "}
+            in{" "}
+            <code className="rounded bg-muted px-1 py-0.5">.env.local</code>{" "}
+            to enable real-time global commodity prices.{" "}
+            <a
+              href="https://www.alphavantage.co/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-foreground"
+            >
+              Get a free key →
+            </a>
           </p>
         )}
       </CardContent>
